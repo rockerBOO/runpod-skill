@@ -4,9 +4,9 @@ Claude Code skills for renting, running jobs on, monitoring and tearing down [Ru
 
 | Skill | Loads when |
 |---|---|
-| `skills/runpod` | Any Runpod pod/volume work. Hard rules (approval before spend, no deletes without asking, secrets, timers), workflow, plan template, helper scripts in `scripts/`, CLI notes in `reference.md` |
-| `skills/runpod-checkin` | A paid job is running: check-ins, `rp-status`, safety timers, background monitors |
-| `skills/runpod-python-env` | Installing Python deps on a pod without losing the image's CUDA torch |
+| `runpod` | Any Runpod pod/volume work. Hard rules (approval before spend, no deletes without asking, secrets, timers), workflow, plan template, helper scripts in `scripts/`, CLI notes in `reference.md` |
+| `runpod-checkin` | A paid job is running: check-ins, `rp-status`, safety timers, background monitors |
+| `runpod-python-env` | Installing Python deps on a pod without losing the image's CUDA torch |
 
 ## Install
 
