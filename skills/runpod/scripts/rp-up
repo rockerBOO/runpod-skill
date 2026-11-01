@@ -1,18 +1,13 @@
 #!/usr/bin/env bash
 # Generic pod bootstrap (no job assumptions): wait for SSH, install tmux/rsync/git, pin pip, install uv.
 # Installs nothing else into the image's Python (huggingface_hub's deps break the image's httpcore); projects install
-# what they need in their own venv (see runpod-python-env). Optionally stream HF_TOKEN from $RP_ENV_FILE (default ./.env in the current dir) to /workspace/hf/token and verify with whoami (prints account name only).
-#   rp-up <pod-id> [--hf-token]
+# what they need in their own venv (see runpod-python-env). Handles no secrets.
+#   rp-up <pod-id>
 # Arm the safety timer (rp-timer arm) BEFORE running this: it can wait up to ~7 min for SSH.
 set -euo pipefail
-. "$(dirname "$(realpath "$0")")/_rp_conn.sh"; env_file=${RP_ENV_FILE:-.env}; pod=${1:?pod id}; want_tok=${2:-}
+. "$(dirname "$(realpath "$0")")/_rp_conn.sh"; pod=${1:?pod id}
 t0=$(date +%s); until [ -n "$(runpodctl pod get "$pod" | jq -r '.ssh.ip // empty')" ]; do sleep 3; [ $(( $(date +%s)-t0 )) -gt 300 ] && { echo "no .ssh from pod get after 300s" >&2; exit 1; }; done
 until "$RP_DIR/rp-ssh" "$pod" true 2>/dev/null; do sleep 3; [ $(( $(date +%s)-t0 )) -gt 400 ] && { echo "ssh not answering" >&2; exit 1; }; done
 "$RP_DIR/rp-ssh" "$pod" 'export DEBIAN_FRONTEND=noninteractive; (apt-get update -qq && apt-get install -y -qq tmux rsync git) >/tmp/apt.log 2>&1 || { tail -3 /tmp/apt.log; exit 1; }
 python3 -m pip install -q --root-user-action=ignore --upgrade "pip==26.2.2" uv 2>&1 | tail -2
 python3 -m pip --version; which tmux rsync git uv'
-if [ "$want_tok" = --hf-token ]; then
-  tok=$(grep '^HF_TOKEN=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//'); [ -n "$tok" ] || { echo "no HF_TOKEN in $env_file" >&2; exit 1; }
-  printf '%s' "$tok" | "$RP_DIR/rp-ssh" "$pod" 'umask 077; mkdir -p /workspace/hf; cat > /workspace/hf/token; chmod 600 /workspace/hf/token; HF_HOME=/workspace/hf uv run -q --no-project --with huggingface_hub python3 -c "from huggingface_hub import HfApi; print(\"HF account:\", HfApi().whoami()[\"name\"])"'
-  unset tok; echo "NOTE: /workspace/hf/token is on the pod volume; delete at teardown"
-fi

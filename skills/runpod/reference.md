@@ -85,9 +85,7 @@ runpodctl pod get <id> | jq -r '.ssh.ssh_command'
 
 ## Secrets on a pod
 
-A new pod has **no** `HF_TOKEN`; its only credential is a pod-scoped `RUNPOD_API_KEY` that can't manage the pod. Options, best first:
-1. **Runpod secret** created by the user in the console: `--env '{"HF_TOKEN":"{{ RUNPOD_SECRET_<name> }}"}'` at create (documented for templates; unverified with `pod create`).
-2. **Stream from `.env` over SSH stdin** to a 600 file (what `rp-up --hf-token` does). `huggingface_hub` reads `$HF_HOME/token` at call time, so running processes pick it up. Only with the user's OK; delete `/workspace/hf/token` at teardown (it survives `pod stop`).
+A new pod has **no** `HF_TOKEN`; its only credential is a pod-scoped `RUNPOD_API_KEY` that can't manage the pod. Tokens get onto a pod by Runpod's normal means, set up by the user: a **Runpod secret** created in the console and referenced at create (`--env '{"HF_TOKEN":"{{ RUNPOD_SECRET_<name> }}"}'`; documented for templates, unverified with `pod create`), or the user logging in on the pod themselves. Agents never copy tokens from local files to a pod; if a job needs one, ask the user to provide it.
 
 ## Lifecycle
 
