@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# One-glance health check. Read-only, job-agnostic. Exit 1 if any warning.
+#   pods      state, uptime, rate; for running pods the safety timer and the newest /workspace/*.log line
+#   monitors  from $RP_STATE/monitors/*.pid
+#   volumes   network volumes (bill until deleted)
+#   money     balance, current spend rate (lags ~1 min after changes), session estimate (uptime x GPU rate, excludes disk), billed last 3 days
+# Warns on: non-stopped pod without a live timer, dead monitor while a pod runs, log stale >15 min, unreachable pod, error state.
+# Exits 2 if the Runpod API cannot be read (never prints OK then).
+# Stopped pods are listed as such: their volume still bills until `pod delete`.
+. "$(dirname "$(realpath "$0")")/_rp_conn.sh"; unset RP_HOST RP_PORT; now=$(date +%s); warns=(); tot=0; running_n=0; stopped=()
+w(){ warns+=("$*"); }
+api(){ local out; out=$(runpodctl "$@" 2>&1) && jq -e . >/dev/null 2>&1 <<<"$out" || { echo "!! runpodctl $* failed: $(head -c 300 <<<"$out")" >&2; echo "STATUS UNKNOWN" >&2; exit 2; }; printf '%s' "$out"; }
+pl=$(api pod list --all) || exit 2
+pods=$(jq -r '.[].id' <<<"$pl")
+[ -n "$pods" ] || echo "no pods"
+for p in $pods; do
+  g=$(api pod get "$p") || exit 2
+  IFS=$'\t' read -r st name up c vol < <(jq -r '[.runtimeStatus,.name,(.uptimeSeconds//0),(.costPerHr//0),(.volumeInGb//0)]|@tsv' <<<"$g")
+  case $st in
+    stopped|exited)
+      # ~$0.20/GB/month for a stopped pod's volume disk (Runpod pricing; check billing for the exact rate)
+      stopped+=("$p"); printf '%s  %-24s STOPPED  %sGB volume still bills (~$%s/hr)\n' "$p" "$name" "$vol" "$(awk -v v="$vol" 'BEGIN{printf "%.2f", v*0.0003}')"; continue;;
+    error) printf '%s  %-24s ERROR\n' "$p" "$name"; w "pod $p is in ERROR state (can still bill): runpodctl pod logs $p"; continue;;
+  esac
+  running_n=$((running_n+1)); tot=$(awk -v t="$tot" -v u="$up" -v c="$c" 'BEGIN{printf "%.2f", t+u/3600*c}')
+  printf '%s  %-24s %s %dh%02dm  $%s/hr\n' "$p" "$name" "$st" $((up/3600)) $((up%3600/60)) "$c"
+  tf=$RP_STATE/timers/$p.pid; timer="NO TIMER"
+  if [ -s "$tf" ] && kill -0 "$(cut -d' ' -f1 "$tf")" 2>/dev/null; then
+    iso=$(cut -d' ' -f2 "$tf"); left=$(( $(date -d "$iso" +%s) - now ))
+    timer="stops $(date -d "$iso" +%H:%M) (in $((left/3600))h$(printf %02d $((left%3600/60)))m)"
+  else w "no live safety timer on $p: rp-timer arm $p <secs>"; fi
+  line=$(timeout 20 "$RP_DIR/rp-ssh" "$p" 'f=$(ls -t /workspace/*.log 2>/dev/null | head -1); [ -n "$f" ] && echo "$(( $(date +%s) - $(stat -c %Y "$f") ))|$(basename $f)|$(tail -c 3000 "$f" | tr "\r" "\n" | grep -v "^$" | tail -1 | cut -c1-70)" || echo "-|no log|"' 2>/dev/null)
+  if [ -z "$line" ]; then log="unreachable"; w "cannot SSH to $p"
+  else
+    IFS='|' read -r age lf txt <<<"$line"
+    if [[ $age =~ ^[0-9]+$ ]]; then
+      [ "$age" -gt 900 ] && w "$p: $lf not updated for $((age/60)) min (stalled, at a prompt, or crashed)"
+      [ "$age" -ge 120 ] && ago="$((age/60))m" || ago="${age}s"; log="$lf ${ago} ago: $txt"
+    else log="$lf"; fi
+  fi
+  echo "    $timer | $log"
+done
+shopt -s nullglob; ms=()
+for f in "$RP_STATE"/monitors/*.pid; do
+  n=$(basename "$f" .pid)
+  if kill -0 "$(cat "$f")" 2>/dev/null; then ms+=("$n alive")
+  else ms+=("$n DEAD"); [ $running_n -gt 0 ] && w "monitor $n is not running while a pod is up (relaunch with run_in_background, or delete $RP_STATE/monitors/$n.pid if its run is finished)"; fi
+done
+if [ ${#ms[@]} -eq 0 ]; then echo "monitors: none"; else (IFS=,; echo "monitors: ${ms[*]}" | sed 's/,/, /g'); fi
+nv=$(api network-volume list) || exit 2
+if [ "$(jq length <<<"$nv")" -gt 0 ]; then
+  echo "network volumes (bill until deleted): $(jq -r '[.[] | "\(.name // .id) \(.size)GB \(.dataCenterId // "")"] | join(", ")' <<<"$nv")"
+else echo "network volumes: none"; fi
+me=$(api me) || exit 2
+bill=$(runpodctl billing pods --start-time "$(date -u -d '3 days ago' +%FT00:00:00Z)" --end-time "$(date -u -d '+1 day' +%FT00:00:00Z)" 2>/dev/null); jq -e 'type=="array"' <<<"$bill" >/dev/null 2>&1 || bill='[]'
+printf 'money: balance $%s | spend now $%s/hr | session ~$%s | billed 3d $%s (lags)\n' \
+  "$(jq -r '.clientBalance|floor' <<<"$me")" "$(jq -r '.currentSpendPerHr' <<<"$me")" "$tot" "$(jq -r '[.[].totalAmount]|add // 0|.*100|round/100' <<<"$bill")"
+[ ${#stopped[@]} -gt 0 ] && echo "stopped pods: resume with 'runpodctl pod start <id>'; end billing with 'runpodctl pod delete <id>' (ask first)"
+for m in "${warns[@]}"; do echo "!! $m"; done
+if [ ${#warns[@]} -eq 0 ]; then echo "OK"; else echo "${#warns[@]} WARNING(S)"; fi
+[ ${#warns[@]} -eq 0 ]

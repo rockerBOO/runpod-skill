@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Usage: rp-ssh <pod-id> [command...]   (no command = interactive shell)
+set -euo pipefail
+. "$(dirname "$(realpath "$0")")/_rp_conn.sh"
+pod=${1:-}; shift || true
+rp_resolve "$pod"
+exec ssh "${RP_SSH_OPTS[@]}" "root@$RP_HOST" "$@"

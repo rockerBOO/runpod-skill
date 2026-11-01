@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Safety stop for a paid pod, run from the local machine. PIDs are recorded in $RP_STATE/timers/<pod>.pid; never find them with pgrep/pkill -f.
+#   rp-timer arm <pod-id> <max-uptime-secs> [logfile=$RP_STATE/timers/<pod>.log]   # stop the pod when its uptime reaches max (pod stop, not delete)
+#   rp-timer status [<pod-id>]                                                      # show armed timers + fire time
+#   rp-timer cancel <pod-id>
+# Waits on wall-clock time, so after a suspend it fires within ~30 s of waking; a power-off loses the timer.
+# Retries `pod stop` up to 5 times and logs every attempt. Pod uptime can lag wall clock by ~2 min, so it fires slightly late.
+set -euo pipefail
+. "$(dirname "$(realpath "$0")")/_rp_conn.sh"; D=$RP_STATE/timers; mkdir -p "$D"; rpctl=$(command -v runpodctl)
+cmd=${1:?arm|status|cancel}; pod=${2:-}
+alive(){ [ -s "$1" ] && kill -0 "$(cut -d' ' -f1 "$1")" 2>/dev/null; }
+case $cmd in
+  arm)
+    [ -n "$pod" ] || { echo "usage: rp-timer arm <pod-id> <max-uptime-secs> [logfile]" >&2; exit 2; }
+    max=${3:?max uptime secs}; log=${4:-$D/$pod.log}
+    up=$(runpodctl pod get "$pod" | jq -er '.uptimeSeconds // 0') || { echo "cannot read pod $pod" >&2; exit 1; }
+    s=$((max-up)); [ $s -gt 0 ] || s=1
+    ! alive "$D/$pod.pid" || { echo "already armed for $pod (cancel first)"; exit 1; }
+    target=$(( $(date +%s) + s )); fire=$(date -d "@$target" -Is)
+    # shellcheck disable=SC2016  # the inner script gets its values as positional args
+    nohup setsid bash -c '
+      pod=$1 target=$2 fire=$3 log=$4 pidf=$5 rpctl=$6
+      echo "$$ $fire $log" > "$pidf"
+      while [ "$(date +%s)" -lt "$target" ]; do sleep 30; done
+      for i in 1 2 3 4 5; do
+        echo "$(date -Is) rp-timer: pod stop $pod (attempt $i)" >> "$log"
+        "$rpctl" pod stop "$pod" >> "$log" 2>&1 && { echo "$(date -Is) rp-timer: stopped $pod" >> "$log"; break; }
+        sleep 30
+      done
+      rm -f "$pidf"' rp-timer "$pod" "$target" "$fire" "$log" "$D/$pod.pid" "$rpctl" >/dev/null 2>&1 &
+    sleep 1; echo "armed $pod: stop in ${s}s at $fire (pid $(cut -d' ' -f1 "$D/$pod.pid"), log $log)";;
+  status)
+    for f in "$D"/${pod:-*}.pid; do [ -e "$f" ] || continue; alive "$f" && echo "$(basename "$f" .pid) ARMED pid=$(cut -d' ' -f1 "$f") fires=$(cut -d' ' -f2 "$f") log=$(cut -d' ' -f3- "$f")" || echo "$(basename "$f" .pid) STALE"; done;;
+  cancel)
+    f=$D/$pod.pid; alive "$f" || { echo "no live timer for $pod"; rm -f "$f"; exit 0; }
+    p=$(cut -d' ' -f1 "$f"); pkill -P "$p" || true; kill "$p" || true; rm -f "$f"; echo "cancelled $pod (pid $p)";;
+  *) echo "usage: rp-timer arm|status|cancel" >&2; exit 2;;
+esac

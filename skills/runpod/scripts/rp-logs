@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Watch a job log on a pod live. Resolves ssh from `pod get` each call (port changes on restart).
+#   rp-logs <pod-id>                 follow the newest /workspace/*.log (progress bars rendered as lines)
+#   rp-logs <pod-id> <remote-file>   follow a specific file
+#   rp-logs <pod-id> --container     follow the container/system log (start script only, not job output)
+#   rp-logs <pod-id> --tmux [name]   attach to the pod's tmux session (most recent, or named); detach with Ctrl+B then D, never Ctrl+C
+set -euo pipefail
+. "$(dirname "$(realpath "$0")")/_rp_conn.sh"; pod=${1:?usage: rp-logs <pod-id> [remote-file|--container|--tmux]}; what=${2:-}
+case $what in
+  --container) exec runpodctl pod logs "$pod" --follow;;
+  --tmux)      rp_resolve "$pod"; sess=${3:-}; exec ssh -t "${RP_SSH_OPTS[@]}" "root@$RP_HOST" "tmux attach ${sess:+-t $sess} || tmux ls";;
+  *)           rp_resolve "$pod"
+               f=${what:-}; exec ssh -t "${RP_SSH_OPTS[@]}" "root@$RP_HOST" "f=${f:-\$(ls -t /workspace/*.log | head -1)}; echo \"== following \$f (Ctrl+C stops watching, not the job) ==\"; tail -n 20 -F \"\$f\" | sed -u 's/\r/\n/g' | grep --line-buffered -v '^\$'";;
+esac

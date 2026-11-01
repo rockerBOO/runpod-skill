@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Usage: rp-sync <pod-id> <local-dir-or-file> [remote-path=/workspace/<basename>] [extra rsync args...]
+# A directory is synced as a directory; a single file is copied to exactly <remote-path> (a file path).
+# Directory pushes exclude .git, .venv, __pycache__ and *.safetensors. Needs rsync on the pod:
+# the stock runpod/pytorch image lacks it, so we install it on first use.
+# Owner/group are never copied: the /workspace volume refuses chown (rsync -a exits 23 even though the files arrive).
+# Pull results back:  rp-sync <pod-id> --pull <remote-path> <local-path>   (local files get default permissions)
+set -euo pipefail
+. "$(dirname "$(realpath "$0")")/_rp_conn.sh"
+pod=${1:-}; shift || true
+rp_resolve "$pod"
+ssh_cmd="ssh ${RP_SSH_OPTS[*]}"
+ssh "${RP_SSH_OPTS[@]}" "root@$RP_HOST" 'command -v rsync >/dev/null || (apt-get update -qq && apt-get install -y -qq rsync tmux >/dev/null)'
+if [ "${1:-}" = "--pull" ]; then
+  [ $# -ge 3 ] || { echo "usage: rp-sync <pod-id> --pull <remote-path> <local-path>" >&2; exit 2; }
+  rsync -rltz --info=progress2 -e "$ssh_cmd" "root@$RP_HOST:$2" "$3"
+else
+  src=${1:?local dir or file}; dst=${2:-/workspace/$(basename "$(realpath "$src")")}; shift; shift || true
+  if [ -f "$src" ]; then
+    ssh "${RP_SSH_OPTS[@]}" "root@$RP_HOST" "mkdir -p \"\$(dirname '$dst')\""
+    rsync -rlptz --info=progress2 -e "$ssh_cmd" "$@" "$src" "root@$RP_HOST:$dst"
+  else
+    rsync -rlptz --info=progress2 --exclude .git --exclude .venv --exclude __pycache__ --exclude '*.safetensors' \
+      -e "$ssh_cmd" "$@" "$src/" "root@$RP_HOST:$dst/"
+  fi
+fi

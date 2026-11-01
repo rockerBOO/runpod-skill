@@ -1,0 +1,6 @@
+{
+  "name": "runpod",
+  "description": "Rent, use, monitor and tear down Runpod GPU pods with runpodctl, with spend/safety rules and helper scripts.",
+  "version": "0.1.0",
+  "author": { "name": "rockerBOO" }
+}
